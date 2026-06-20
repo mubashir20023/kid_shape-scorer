@@ -1,0 +1,21 @@
+# Core deep learning
+torch>=2.1.0
+torchvision>=0.16.0
+
+# Vision Transformer and MobileViT backbone (includes ViT-S, MobileViT-S)
+timm>=0.9.12
+
+# Data and utilities
+numpy>=1.24.0
+Pillow>=10.0.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+tqdm>=4.66.0
+
+# DiffuseMix diffusion backend (optional — falls back to procedural augmentation)
+diffusers>=0.24.0
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# CPU-only PyTorch index (comment out if you have a CUDA GPU)
+--extra-index-url https://download.pytorch.org/whl/cpu

@@ -1,0 +1,46 @@
+# ============================================================
+#  BOT-2 Shape Scoring  ->  .gitignore
+#  Goal: commit SOURCE CODE only. Never commit the confidential
+#  dataset, real children's drawings, model checkpoints, or scratch.
+# ============================================================
+
+# --- Archived / scratch (old copy, node_modules, build files) ---
+out/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# --- Model checkpoints & large binaries (regenerable, do not commit) ---
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# --- Generated results / metrics (may derive from confidential data) ---
+results/
+training_summary*.json
+
+# --- CONFIDENTIAL: the dataset itself, never commit ---
+Shapes/
+**/Shapes/
+*.jpg
+*.jpeg
+
+# --- CONFIDENTIAL: figures that contain real children's drawings ---
+report_overleaf/figures/sample_shapes.*
+report_overleaf/figures/augmentation_pipeline.*
+
+# --- Node (docx generator) ---
+node_modules/
+package-lock.json
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
