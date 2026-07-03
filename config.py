@@ -4,7 +4,7 @@ config.py — Central configuration for the BOT-2 shape scoring pipeline.
 
 import os
 
-DATASET_PATH = r"C:\Users\Administrator\Downloads\Shapes\Shapes"
+DATASET_PATH = r"C:\Users\Mubashir\Downloads\Shapes"
 
 SHAPES = {
     "Circle":            {"code": "C",  "max_score": 4},
@@ -17,7 +17,7 @@ SHAPES = {
     "Overlapped pencils":{"code": "p",  "max_score": 6},
 }
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 SKIP_FILES = {"img1688-ST-6.png"}
@@ -61,5 +61,9 @@ SWA_LR          = 5e-5
 VAL_SPLIT       = 0.2
 TEST_SPLIT      = 0.1
 MIN_CLASS_COUNT = 1
+
+# Cross-validation
+N_FOLDS           = 5
+CV_INNER_VAL_SPLIT = 0.15   # inner train/val split used for checkpoint selection within each fold
 
 SEED = 42

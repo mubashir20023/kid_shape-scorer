@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import (
     confusion_matrix, cohen_kappa_score, mean_absolute_error,
+    classification_report,
 )
 
 from config import RESULTS_DIR, SHAPES
@@ -194,10 +195,106 @@ def extended_metrics(results: list):
               f"{m['qwk']:>6.3f}")
 
 
+def classification_reports(results: list, save_dir: str,
+                           txt_name: str = "classification_reports.txt"):
+    """
+    Per-shape, per-model precision / recall / F1-score (in addition to the
+    accuracy / QWK / MAE already reported by extended_metrics).
+
+    Uses the original BOT-2 score (via label_remap) as the class label for
+    readability, matching the confusion-matrix tick labels.
+
+    Macro-F1 is printed alongside weighted-F1 because macro-F1 is the
+    number that actually reflects performance on the rare, diagnostically
+    important low-score classes; weighted-F1 (like raw accuracy) is
+    dominated by the majority class and can look deceptively good.
+    """
+    lines  = []
+    banner = "=" * 70
+
+    for r in results:
+        shape       = r["shape"]
+        model_tag   = r["model"]
+        label_remap = {int(k): v for k, v in r.get("label_remap", {}).items()}
+        labels      = r["labels"]
+        preds       = r["preds"]
+
+        inv = {}
+        for orig, mapped in label_remap.items():
+            inv.setdefault(mapped, int(orig))
+
+        present      = sorted(set(labels) | set(preds))
+        target_names = [str(inv.get(i, i)) for i in present]
+
+        report_txt = classification_report(
+            labels, preds, labels=present, target_names=target_names,
+            zero_division=0,
+        )
+        report_dict = classification_report(
+            labels, preds, labels=present, target_names=target_names,
+            output_dict=True, zero_division=0,
+        )
+        macro_f1    = report_dict["macro avg"]["f1-score"]
+        weighted_f1 = report_dict["weighted avg"]["f1-score"]
+
+        block = (f"{banner}\n{shape} \u2014 {model_tag}  "
+                 f"(macro-F1={macro_f1:.3f}, weighted-F1={weighted_f1:.3f})\n"
+                 f"{banner}\n{report_txt}")
+        print("\n" + block)
+        lines.append(block)
+
+        r["macro_f1"]    = macro_f1
+        r["weighted_f1"] = weighted_f1
+
+    out_path = os.path.join(save_dir, txt_name)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"\nFull per-class classification reports saved to {out_path}")
+
+
+def print_prf_summary_table(results: list):
+    header = (f"{'Shape':<22} {'Model':<14} {'Acc%':>6} "
+              f"{'MacroF1':>8} {'WtF1':>8} {'QWK':>6}")
+    print("\n" + header)
+    print("-" * len(header))
+    for r in results:
+        print(f"  {r['shape']:<20} {r['model']:<14} "
+              f"{r.get('test_acc', float('nan'))*100:>5.1f}% "
+              f"{r.get('macro_f1', float('nan')):>8.3f} "
+              f"{r.get('weighted_f1', float('nan')):>8.3f} "
+              f"{r.get('qwk', float('nan')):>6.3f}")
+
+
+def print_cv_summary_table(cv_json_path: str):
+    if not os.path.exists(cv_json_path):
+        return
+    with open(cv_json_path) as f:
+        cv_results = json.load(f)
+
+    header = (f"{'Shape':<22} {'Model':<14} {'Folds':>5} "
+              f"{'Acc% (mean±std)':>18} {'MAE (mean±std)':>16} "
+              f"{'QWK (mean±std)':>16}")
+    banner = "=" * len(header)
+    print("\n" + banner)
+    print("Cross-Validation Summary (mean \u00b1 std across folds)")
+    print(banner)
+    print(header)
+    print("-" * len(header))
+    for r in cv_results:
+        acc_str = f"{r['acc_mean']*100:.1f}\u00b1{r['acc_std']*100:.1f}"
+        mae_str = f"{r['mae_mean']:.3f}\u00b1{r['mae_std']:.3f}"
+        qwk_str = f"{r['qwk_mean']:.3f}\u00b1{r['qwk_std']:.3f}"
+        print(f"  {r['shape']:<20} {r['model']:<14} {r['n_folds']:>5} "
+              f"{acc_str:>18} {mae_str:>16} {qwk_str:>16}")
+    print(f"\n(loaded from {cv_json_path})")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--json",
                         default=os.path.join(RESULTS_DIR, "training_summary.json"))
+    parser.add_argument("--cv_json",
+                        default=os.path.join(RESULTS_DIR, "cv_summary.json"))
     args = parser.parse_args()
 
     results = load_results(args.json)
@@ -222,6 +319,12 @@ def main():
 
     print_latex_table(results)
     extended_metrics(results)
+
+    classification_reports(results, RESULTS_DIR)
+    print_prf_summary_table(results)
+
+    print_cv_summary_table(args.cv_json)
+
     print(f"\nAll plots saved to {RESULTS_DIR}")
 
 

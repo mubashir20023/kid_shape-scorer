@@ -1,46 +1,90 @@
 # ============================================================
 #  BOT-2 Shape Scoring  ->  .gitignore
-#  Goal: commit SOURCE CODE only. Never commit the confidential
-#  dataset, real children's drawings, model checkpoints, or scratch.
+#  Commit SOURCE CODE only
+#  Never commit confidential drawings, dataset, checkpoints
 # ============================================================
 
-# --- Archived / scratch (old copy, node_modules, build files) ---
-out/
 
-# --- Python ---
+# ------------------------------------------------------------
+# Python cache/environment
+# ------------------------------------------------------------
 __pycache__/
+**/__pycache__/
+
 *.py[cod]
 *.egg-info/
+
 .ipynb_checkpoints/
+
 .venv/
 venv/
 
-# --- Model checkpoints & large binaries (regenerable, do not commit) ---
+
+# ------------------------------------------------------------
+# Training outputs / generated results
+# ------------------------------------------------------------
+out/
+results/
+
+cv_progress/
+
+training_summary*.json
+cv_summary*.json
+
+classification_reports.txt
+
+
+# ------------------------------------------------------------
+# Model checkpoints / weights
+# ------------------------------------------------------------
 *.pt
 *.pth
 *.ckpt
 *.onnx
 
-# --- Generated results / metrics (may derive from confidential data) ---
-results/
-training_summary*.json
 
-# --- CONFIDENTIAL: the dataset itself, never commit ---
+# ------------------------------------------------------------
+# CONFIDENTIAL DATASET
+# ------------------------------------------------------------
 Shapes/
 **/Shapes/
+
 *.jpg
 *.jpeg
 
-# --- CONFIDENTIAL: figures that contain real children's drawings ---
+
+# ------------------------------------------------------------
+# Confidential generated figures containing real drawings
+# ------------------------------------------------------------
 report_overleaf/figures/sample_shapes.*
 report_overleaf/figures/augmentation_pipeline.*
 
-# --- Node (docx generator) ---
+overleaf/figures/sample_shapes.*
+overleaf/figures/augmentation_pipeline.*
+
+
+# ------------------------------------------------------------
+# Temporary Overleaf exports
+# ------------------------------------------------------------
+overleaf_upload/
+overleaf_upload.zip
+
+report_overleaf/
+
+
+# ------------------------------------------------------------
+# Node
+# ------------------------------------------------------------
 node_modules/
 package-lock.json
 
-# --- OS / editor cruft ---
+
+# ------------------------------------------------------------
+# OS/editor
+# ------------------------------------------------------------
 .DS_Store
 Thumbs.db
 desktop.ini
+
 .vscode/
+.idea/

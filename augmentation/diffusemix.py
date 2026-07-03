@@ -22,11 +22,27 @@ import torch
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageFilter
 
-try:
-    from diffusers import StableDiffusionImg2ImgPipeline
-    _DIFFUSERS_AVAILABLE = True
-except ImportError:
-    _DIFFUSERS_AVAILABLE = False
+# NOTE: `diffusers` (and the transformers/accelerate stack it pulls in) is
+# intentionally NOT imported at module load time. It is a very heavy import
+# (several hundred MB+ of resident memory) that is only ever needed when
+# `use_diffusion=True`. Since this project runs with
+# `DiffuseMix(alpha=0.5, use_diffusion=False)` (CPU-only procedural
+# fallback), eagerly importing it here was contributing to memory pressure
+# across a long-running multi-fold, multi-shape training loop for no
+# benefit. It is imported lazily inside `DiffuseMix.__init__` instead, only
+# on the code path that actually needs it.
+_DIFFUSERS_AVAILABLE = None  # resolved lazily; see _check_diffusers_available()
+
+
+def _check_diffusers_available() -> bool:
+    global _DIFFUSERS_AVAILABLE
+    if _DIFFUSERS_AVAILABLE is None:
+        try:
+            import diffusers  # noqa: F401
+            _DIFFUSERS_AVAILABLE = True
+        except ImportError:
+            _DIFFUSERS_AVAILABLE = False
+    return _DIFFUSERS_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -123,8 +139,9 @@ class DiffuseMix:
         self.device = device
         self.pipeline = None
 
-        if use_diffusion and _DIFFUSERS_AVAILABLE:
+        if use_diffusion and _check_diffusers_available():
             try:
+                from diffusers import StableDiffusionImg2ImgPipeline
                 self.pipeline = StableDiffusionImg2ImgPipeline.from_pretrained(
                     "runwayml/stable-diffusion-v1-5",
                     torch_dtype=torch.float16 if "cuda" in device else torch.float32,

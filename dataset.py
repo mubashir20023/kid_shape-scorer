@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold, KFold
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 
@@ -249,6 +249,80 @@ def safe_split(paths, labels, test_size, seed):
     return tr_p, te_p, tr_l, te_l
 
 
+def build_cv_splits(paths, labels, n_folds, seed):
+    """
+    Build stratified k-fold splits.
+
+    Singleton classes (count == 1) can never appear in a held-out fold, so
+    — exactly as in `safe_split` — their sample(s) are kept in the training
+    portion of every single fold and never scored.
+
+    If a non-singleton class has fewer members than `n_folds`, stratified
+    k-fold is impossible; in that case we fall back to plain (non-stratified)
+    KFold and reduce the number of folds to the largest value that is
+    achievable (at least 2), warning the caller.
+
+    Returns a list of (train_paths, val_paths, train_labels, val_labels)
+    tuples, one per fold.
+    """
+    from collections import Counter as _Counter
+    counts = _Counter(labels)
+
+    singleton_idx = [i for i, l in enumerate(labels) if counts[l] == 1]
+    normal_idx    = [i for i, l in enumerate(labels) if counts[l] > 1]
+
+    singleton_paths  = [paths[i]  for i in singleton_idx]
+    singleton_labels = [labels[i] for i in singleton_idx]
+
+    split_paths  = [paths[i]  for i in normal_idx]
+    split_labels = [labels[i] for i in normal_idx]
+
+    if not split_paths:
+        # Every class is a singleton — no CV is possible; everything trains,
+        # nothing is scored. This should not happen in practice but is
+        # handled defensively.
+        warnings.warn(
+            "All classes are singletons; cannot build CV folds. "
+            "Returning a single fold with an empty validation set.",
+            UserWarning,
+        )
+        return [(paths, [], labels, [])]
+
+    normal_counts = _Counter(split_labels)
+    min_count     = min(normal_counts.values())
+    eff_folds     = max(2, min(n_folds, min_count))
+
+    if eff_folds < n_folds:
+        warnings.warn(
+            f"Smallest non-singleton class has only {min_count} sample(s); "
+            f"reducing folds from {n_folds} to {eff_folds} for this shape.",
+            UserWarning,
+        )
+
+    can_stratify = min_count >= eff_folds
+
+    if can_stratify:
+        kf     = StratifiedKFold(n_splits=eff_folds, shuffle=True, random_state=seed)
+        splits = kf.split(split_paths, split_labels)
+    else:
+        warnings.warn(
+            "Stratification infeasible for remaining folds; "
+            "falling back to unstratified KFold.", UserWarning,
+        )
+        kf     = KFold(n_splits=eff_folds, shuffle=True, random_state=seed)
+        splits = kf.split(split_paths)
+
+    folds = []
+    for tr_idx, va_idx in splits:
+        tr_p = [split_paths[i]  for i in tr_idx] + singleton_paths
+        tr_l = [split_labels[i] for i in tr_idx] + singleton_labels
+        va_p = [split_paths[i]  for i in va_idx]
+        va_l = [split_labels[i] for i in va_idx]
+        folds.append((tr_p, va_p, tr_l, va_l))
+
+    return folds
+
+
 def build_dataloaders(
     shape_name: str,
     batch_size: int = 32,
@@ -328,3 +402,108 @@ def build_dataloaders(
 
     return (train_loader, val_loader, test_loader,
             num_classes, class_weights, label_remap)
+
+
+def build_cv_dataloaders(
+    shape_name: str,
+    n_folds: int = 5,
+    batch_size: int = 32,
+    num_workers: int = 0,
+    diffusemix=None,
+    seed: int = 42,
+    inner_val_split: float = 0.15,
+) -> tuple:
+    """
+    Build k-fold cross-validation DataLoaders for a single shape.
+
+    Each fold's held-out portion acts as that fold's test set. Within a
+    fold's training portion we carve out a further inner train/val split
+    (same role as VAL_SPLIT in `build_dataloaders`) so that checkpoint
+    selection still only ever looks at validation data, never at the
+    fold's held-out test data — mirroring the single-split protocol.
+
+    Singleton classes are kept in every fold's training portion (never
+    scored), exactly as in `build_dataloaders`.
+
+    Returns
+    -------
+    fold_loaders : list of dicts, one per fold, each with keys
+        "train_loader", "val_loader", "test_loader"
+    num_classes, class_weights, label_remap
+    """
+    samples = load_shape_samples(shape_name)
+    paths   = [s[0] for s in samples]
+    labels  = [s[1] for s in samples]
+
+    print(f"  {shape_name}: {len(samples)} images, "
+          f"score distribution: {dict(sorted(Counter(labels).items()))}")
+
+    labels, merge_remap = merge_rare_classes(labels, min_count=MIN_CLASS_COUNT)
+    labels, reindex_map = _reindex(labels)
+
+    label_remap = {
+        orig: reindex_map[merge_remap[orig]]
+        for orig in merge_remap
+    }
+
+    num_classes   = len(set(labels))
+    class_weights = get_class_weights(labels, num_classes)
+
+    outer_folds = build_cv_splits(paths, labels, n_folds=n_folds, seed=seed)
+
+    train_tf = get_train_transforms()
+    val_tf   = get_val_transforms()
+
+    fold_loaders = []
+    for fold_idx, (fold_train_paths, fold_test_paths,
+                   fold_train_labels, fold_test_labels) in enumerate(outer_folds):
+
+        # Inner split of this fold's training portion into train/val, so
+        # checkpoint selection never touches the fold's held-out test data.
+        inner_tr_p, inner_va_p, inner_tr_l, inner_va_l = safe_split(
+            fold_train_paths, fold_train_labels,
+            inner_val_split, seed + fold_idx,
+        )
+
+        train_samples = list(zip(inner_tr_p, inner_tr_l))
+        val_samples   = list(zip(inner_va_p, inner_va_l))
+        test_samples  = list(zip(fold_test_paths, fold_test_labels))
+
+        # NOTE: deliberately NOT using a WeightedRandomSampler here.
+        # train.py's single-split protocol builds one via build_dataloaders()
+        # but immediately discards it in favour of plain shuffle=True
+        # (see train_shape(): "train_ds = tr.dataset; tr = DataLoader(...,
+        # shuffle=True, ...)"). This matches the paper (Section 3.4):
+        # stacking a weighted sampler on top of the loss-level class
+        # weighting double-counts the imbalance correction and collapses
+        # accuracy. Rebalancing here is handled only by `mild_weights()` in
+        # train_cv.py, exactly as in train.py.
+        train_ds = ShapeDataset(train_samples, train_tf, diffusemix)
+        val_ds   = ShapeDataset(val_samples,   val_tf)
+        test_ds  = ShapeDataset(test_samples,  val_tf)
+
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, shuffle=True,
+            num_workers=num_workers, pin_memory=False,
+            drop_last=len(train_ds) > batch_size,
+        )
+        val_loader   = DataLoader(
+            val_ds, batch_size=batch_size, shuffle=False,
+            num_workers=num_workers, pin_memory=False,
+        )
+        test_loader  = DataLoader(
+            test_ds, batch_size=batch_size, shuffle=False,
+            num_workers=num_workers, pin_memory=False,
+        )
+
+        fold_loaders.append({
+            "fold":         fold_idx,
+            "train_loader": train_loader,
+            "val_loader":   val_loader,
+            "test_loader":  test_loader,
+            "n_train":      len(train_samples),
+            "n_val":        len(val_samples),
+            "n_test":       len(test_samples),
+        })
+
+    return fold_loaders, num_classes, class_weights, label_remap
