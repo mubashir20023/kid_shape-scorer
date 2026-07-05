@@ -24,9 +24,60 @@ from sklearn.metrics import (
 from config import RESULTS_DIR, SHAPES
 
 
-def load_results(json_path: str) -> list:
-    with open(json_path) as f:
-        return json.load(f)
+def load_results(json_path: str, cv_json_path: str = None) -> list:
+    """
+    Load the flat per-shape/per-model results list evaluate.py expects.
+
+    If `json_path` (training_summary.json) doesn't exist, this derives the
+    same structure directly from cv_summary.json (the logic that used to
+    live in the separate convert_cv_to_summary.py script), so there is no
+    manual conversion step to remember to run.
+    """
+    if os.path.exists(json_path):
+        with open(json_path) as f:
+            return json.load(f)
+
+    if cv_json_path is None or not os.path.exists(cv_json_path):
+        raise FileNotFoundError(
+            f"Neither {json_path} nor {cv_json_path} exist. "
+            f"Run train.py first to produce cv_summary.json."
+        )
+
+    print(f"[info] {json_path} not found — deriving it from {cv_json_path} "
+          f"(no manual conversion step needed).")
+
+    with open(cv_json_path) as f:
+        cv_data = json.load(f)
+
+    summary = []
+    for item in cv_data:
+        preds, labels = [], []
+        for fold in item["fold_results"]:
+            preds.extend(fold["preds"])
+            labels.extend(fold["labels"])
+
+        summary.append({
+            "shape": item["shape"],
+            "model": item["model"],
+            "test_acc": item["acc_mean"],
+            "qwk": item["qwk_mean"],
+            "mae": item["mae_mean"],
+            "preds": preds,
+            "labels": labels,
+            "label_remap": item.get("label_remap", {}),
+            "history": {
+                "train_loss": [0], "val_loss": [0],
+                "train_acc": [0],  "val_acc": [0],
+            },
+        })
+
+    # Cache it to disk too, so subsequent runs (and anyone inspecting
+    # results/) still have a plain training_summary.json available.
+    with open(json_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"[info] cached derived results to {json_path}")
+
+    return summary
 
 
 def _save(fig, name: str, save_dir: str):
@@ -234,17 +285,26 @@ def classification_reports(results: list, save_dir: str,
             labels, preds, labels=present, target_names=target_names,
             output_dict=True, zero_division=0,
         )
-        macro_f1    = report_dict["macro avg"]["f1-score"]
-        weighted_f1 = report_dict["weighted avg"]["f1-score"]
+        macro_precision    = report_dict["macro avg"]["precision"]
+        macro_recall       = report_dict["macro avg"]["recall"]
+        macro_f1           = report_dict["macro avg"]["f1-score"]
+        weighted_precision = report_dict["weighted avg"]["precision"]
+        weighted_recall    = report_dict["weighted avg"]["recall"]
+        weighted_f1        = report_dict["weighted avg"]["f1-score"]
 
         block = (f"{banner}\n{shape} \u2014 {model_tag}  "
-                 f"(macro-F1={macro_f1:.3f}, weighted-F1={weighted_f1:.3f})\n"
+                 f"(macro-P={macro_precision:.3f}, macro-R={macro_recall:.3f}, "
+                 f"macro-F1={macro_f1:.3f}, weighted-F1={weighted_f1:.3f})\n"
                  f"{banner}\n{report_txt}")
         print("\n" + block)
         lines.append(block)
 
-        r["macro_f1"]    = macro_f1
-        r["weighted_f1"] = weighted_f1
+        r["macro_precision"]    = macro_precision
+        r["macro_recall"]       = macro_recall
+        r["macro_f1"]           = macro_f1
+        r["weighted_precision"] = weighted_precision
+        r["weighted_recall"]    = weighted_recall
+        r["weighted_f1"]        = weighted_f1
 
     out_path = os.path.join(save_dir, txt_name)
     with open(out_path, "w", encoding="utf-8") as f:
@@ -254,15 +314,55 @@ def classification_reports(results: list, save_dir: str,
 
 def print_prf_summary_table(results: list):
     header = (f"{'Shape':<22} {'Model':<14} {'Acc%':>6} "
-              f"{'MacroF1':>8} {'WtF1':>8} {'QWK':>6}")
+              f"{'MacroP':>7} {'MacroR':>7} {'MacroF1':>8} "
+              f"{'WtF1':>8} {'QWK':>6}")
     print("\n" + header)
     print("-" * len(header))
     for r in results:
         print(f"  {r['shape']:<20} {r['model']:<14} "
               f"{r.get('test_acc', float('nan'))*100:>5.1f}% "
+              f"{r.get('macro_precision', float('nan')):>7.3f} "
+              f"{r.get('macro_recall', float('nan')):>7.3f} "
               f"{r.get('macro_f1', float('nan')):>8.3f} "
               f"{r.get('weighted_f1', float('nan')):>8.3f} "
               f"{r.get('qwk', float('nan')):>6.3f}")
+
+
+def print_prf_latex_table(results: list):
+    """
+    Ready-to-paste LaTeX table: per-shape macro Precision / Recall / F1 for
+    both models. This is the table Ali asked for in comment #2 — drop it
+    straight into the report next to Table 2.
+    """
+    vit_rows    = {r["shape"]: r for r in results
+                   if "ViT" in r["model"] and "Mobile" not in r["model"]}
+    mobile_rows = {r["shape"]: r for r in results if "Mobile" in r["model"]}
+
+    print("\n% --- Table: Per-shape Precision/Recall/F1 (macro-averaged) ---")
+    print(r"\begin{table}[t]\centering")
+    print(r"\caption{Per-shape macro-averaged Precision, Recall, and "
+          r"F1-score for both transformers.}")
+    print(r"\label{tab:prf}")
+    print(r"\begin{tabular}{l ccc ccc}")
+    print(r"\hline")
+    print(r" & \multicolumn{3}{c}{\textbf{ViT-S/16}} "
+          r"& \multicolumn{3}{c}{\textbf{MobileViT-S}} \\")
+    print(r"\textbf{Shape} & P & R & F1 & P & R & F1 \\")
+    print(r"\hline")
+
+    for shape in SHAPES:
+        v = vit_rows.get(shape, {})
+        m = mobile_rows.get(shape, {})
+
+        def fmt(d, key):
+            val = d.get(key, float("nan"))
+            return f"{val:.3f}" if val == val else "--"
+
+        print(f"  {shape} "
+              f"& {fmt(v,'macro_precision')} & {fmt(v,'macro_recall')} & {fmt(v,'macro_f1')} "
+              f"& {fmt(m,'macro_precision')} & {fmt(m,'macro_recall')} & {fmt(m,'macro_f1')} \\\\")
+
+    print(r"\hline\end{tabular}\end{table}")
 
 
 def print_cv_summary_table(cv_json_path: str):
@@ -297,7 +397,7 @@ def main():
                         default=os.path.join(RESULTS_DIR, "cv_summary.json"))
     args = parser.parse_args()
 
-    results = load_results(args.json)
+    results = load_results(args.json, args.cv_json)
 
     for r in results:
         shape       = r["shape"]
@@ -322,6 +422,7 @@ def main():
 
     classification_reports(results, RESULTS_DIR)
     print_prf_summary_table(results)
+    print_prf_latex_table(results)
 
     print_cv_summary_table(args.cv_json)
 
